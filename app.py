@@ -165,6 +165,15 @@ $$\text{sim}(A, B) = \frac{A \cdot B}{\|A\| \cdot \|B\|}$$
                 full_screen=True,
             ),
             col_widths=[7, 5],
+            fill=False,
+        ),
+        ui.card(
+            ui.card_header(
+                "🧮 Покроковий розрахунок косинусної подібності "
+                "для топ-сусіда"
+            ),
+            ui.output_ui("breakdown_ui"),
+            full_screen=True,
             fill=True,
         ),
     ),
@@ -275,7 +284,7 @@ $$\text{Score} = \sum_{k} w_k \cdot \text{сигнал}_k$$
                 ui.input_checkbox("liked", "❤️ Лайк"),
                 ui.input_checkbox("commented", "💬 Коментар"),
                 ui.input_checkbox("reposted", "🔁 Репост"),
-                fill=True,
+                fill=False,
             ),
             ui.card(
                 ui.card_header("⚙️ Ваги алгоритму"),
@@ -295,7 +304,7 @@ $$\text{Score} = \sum_{k} w_k \cdot \text{сигнал}_k$$
                     "w_repost", "W_repost (репост)",
                     min=0, max=30, value=20, step=0.5,
                 ),
-                fill=True,
+                fill=False,
             ),
             ui.div(
                 ui.value_box(
@@ -307,11 +316,19 @@ $$\text{Score} = \sum_{k} w_k \cdot \text{сигнал}_k$$
                 ui.card(
                     ui.card_header("🧮 Розрахунок"),
                     ui.output_ui("score_formula"),
-                    fill=True,
+                    fill=False,
                 ),
-                class_="d-flex flex-column gap-2 h-100",
+                class_="d-flex flex-column gap-2",
             ),
             col_widths=[3, 4, 5],
+            fill=False,
+        ),
+        ui.card(
+            ui.card_header(
+                "📊 Внесок кожного сигналу в підсумковий бал"
+            ),
+            output_widget("contribution_chart", fill=True),
+            full_screen=True,
             fill=True,
         ),
     ),
@@ -391,6 +408,15 @@ window.MathJax = {
             /* Маленька формула в Tab 3. */
             .mini-formula code { font-size: 0.72rem; word-break: break-word; }
             .mini-formula .badge { font-size: 0.7rem; }
+
+            /* Покроковий розбір розрахунку (Tab 1, нижня картка). */
+            .breakdown { font-size: 0.85rem; line-height: 1.5; }
+            .breakdown code {
+                font-size: 0.82rem; word-break: break-word;
+                background: #f3f4f6; padding: 1px 4px; border-radius: 3px;
+                color: #1f2937;
+            }
+            .breakdown b { color: #111; }
         """),
     ),
     matrix_tab,
@@ -557,6 +583,87 @@ def server(input, output, session):
             .reset_index(drop=True)
         )
 
+    # ----- Покроковий розбір розрахунку для топ-сусіда -----
+    @reactive.calc
+    def breakdown_data() -> dict | None:
+        df = matrix_df()
+        target = input.target_user()
+        if target is None or target not in df.index:
+            return None
+        res = similarity_results()
+        if res is None or len(res) == 0:
+            return None
+        nearest = res.iloc[0]["Користувач"]
+        if nearest not in df.index:
+            return None
+        a = df.loc[target].values.astype(int)
+        b = df.loc[nearest].values.astype(int)
+        a_f, b_f = a.astype(float), b.astype(float)
+        return {
+            "target": target,
+            "neighbor": nearest,
+            "a": a, "b": b,
+            "dot": int(np.dot(a, b)),
+            "sum_a2": int(np.sum(a ** 2)),
+            "sum_b2": int(np.sum(b ** 2)),
+            "norm_a": float(np.linalg.norm(a_f)),
+            "norm_b": float(np.linalg.norm(b_f)),
+            "sim": float(res.iloc[0]["Подібність"]),
+        }
+
+    @render.ui
+    def breakdown_ui():
+        bd = breakdown_data()
+        if bd is None:
+            return ui.div(
+                ui.tags.em(
+                    "Немає даних для покрокового розрахунку — додай ще одного користувача."
+                ),
+                class_="text-muted small",
+            )
+        a, b = bd["a"], bd["b"]
+        if bd["norm_a"] == 0 or bd["norm_b"] == 0:
+            return ui.HTML(f"""
+<div class="breakdown small">
+  <div>⚠️ <strong>Один із векторів нульовий</strong> —
+    у користувача <b>{bd['target']}</b> або <b>{bd['neighbor']}</b>
+    усі оцінки = 0.</div>
+  <div>Косинусна подібність формально невизначена (0/0),
+    приймаємо її як <code>0.0000</code>.</div>
+</div>
+""")
+        dot_expr = " + ".join(f"{int(ai)}·{int(bi)}" for ai, bi in zip(a, b))
+        sq_a = " + ".join(f"{int(ai)}²" for ai in a)
+        sq_b = " + ".join(f"{int(bi)}²" for bi in b)
+        return ui.HTML(f"""
+<div class="breakdown">
+  <div class="mb-2">
+    <strong>Пара:</strong>
+    <span style="color:{TARGET_COLOR}">🎯 <b>{bd['target']}</b></span> ↔
+    <span style="color:{NEIGHBOR_COLOR}">🤝 <b>{bd['neighbor']}</b></span>
+    → подібність
+    <code class="text-danger fw-bold">{bd['sim']:.4f}</code>
+  </div>
+  <div class="mb-2">
+    <strong>1️⃣ Скалярний добуток</strong>
+    <code>A·B = Σ aᵢ·bᵢ</code>:<br>
+    <code>{dot_expr} = <b>{bd['dot']}</b></code>
+  </div>
+  <div class="mb-2">
+    <strong>2️⃣ Довжини (норми)</strong>
+    <code>‖V‖ = √(Σ vᵢ²)</code>:<br>
+    <code>‖{bd['target']}‖ = √({sq_a}) = √{bd['sum_a2']} ≈ {bd['norm_a']:.4f}</code><br>
+    <code>‖{bd['neighbor']}‖ = √({sq_b}) = √{bd['sum_b2']} ≈ {bd['norm_b']:.4f}</code>
+  </div>
+  <div>
+    <strong>3️⃣ Косинус кута</strong>
+    <code>cos(θ) = (A·B) / (‖A‖ · ‖B‖)</code>:<br>
+    <code>{bd['dot']} / ({bd['norm_a']:.4f} × {bd['norm_b']:.4f}) =
+      <b class="text-danger">{bd['sim']:.4f}</b></code>
+  </div>
+</div>
+""")
+
     @render.data_frame
     def neighbors_table():
         res = similarity_results()
@@ -609,13 +716,22 @@ def server(input, output, session):
             else None
         )
 
-        # Префіксуємо імена емодзі, щоб виділити ключові ролі прямо на осі Y.
+        # Витягуємо подібність кожного сусіда — додамо в підпис рядка.
+        sim_by_user: dict[str, float] = {}
+        if res is not None and len(res) > 0:
+            for _, row in res.iterrows():
+                sim_by_user[row["Користувач"]] = float(row["Подібність"])
+
+        # Префіксуємо імена емодзі та додаємо значення подібності в дужках.
         def decorate(u: str) -> str:
             if u == target:
-                return f"🎯 {u}"
+                return f"🎯  {u}"
+            sim_str = (
+                f"  ({sim_by_user[u]:.3f})" if u in sim_by_user else ""
+            )
             if u == nearest:
-                return f"🤝 {u}"
-            return u
+                return f"🤝  {u}{sim_str}"
+            return f"{u}{sim_str}"
 
         y_labels = [decorate(u) for u in ordered]
 
@@ -631,7 +747,7 @@ def server(input, output, session):
             text_auto=".0f" if show_values else False,
             zmin=RATING_MIN,
             zmax=RATING_MAX,
-            labels=dict(x="Категорія", y="Користувач", color="Оцінка"),
+            labels=dict(x="", y="", color="Оцінка"),
         )
         fig.update_traces(
             hovertemplate=(
@@ -644,13 +760,20 @@ def server(input, output, session):
         )
         fig.update_layout(
             height=600,
-            margin=dict(l=40, r=20, t=20, b=60),
+            margin=dict(l=20, r=20, t=20, b=20),
             coloraxis_colorbar=dict(
                 title=dict(text="Оцінка"),
                 tickvals=list(range(RATING_MIN, RATING_MAX + 1)),
             ),
-            xaxis=dict(side="top", tickangle=-30),
-            yaxis=dict(autorange="reversed"),
+            xaxis=dict(
+                side="top", tickangle=-30,
+                automargin=True, title=None,
+            ),
+            yaxis=dict(
+                autorange="reversed",
+                automargin=True, title=None,
+                tickfont=dict(size=12),
+            ),
             plot_bgcolor="white",
         )
 
@@ -747,6 +870,59 @@ def server(input, output, session):
         if total < 120:
             return "Висока зацікавленість — сильний сигнал для рекомендацій."
         return "Дуже висока зацікавленість — ідеальний матеріал для алгоритму."
+
+    @render_widget
+    def contribution_chart():
+        e = engagement()
+        labels = ["👁 Перегляд", "❤️ Лайк", "💬 Коментар", "🔁 Репост"]
+        values = [e["watch_score"], e["like_score"], e["comment_score"], e["repost_score"]]
+        colors = ["#3498db", "#2ecc71", "#f39c12", "#e74c3c"]
+        total = e["total"]
+
+        text_labels = [
+            f"{v:.1f}  ({v / total * 100:.0f}%)" if total > 0 else f"{v:.1f}"
+            for v in values
+        ]
+
+        fig = go.Figure(go.Bar(
+            x=values,
+            y=labels,
+            orientation="h",
+            marker=dict(color=colors, line=dict(color="white", width=2)),
+            text=text_labels,
+            textposition="outside",
+            textfont=dict(size=14),
+            hovertemplate="<b>%{y}</b><br>Внесок: %{x:.2f}<extra></extra>",
+        ))
+        # Лінія підсумку — допомагає швидко прочитати загальний масштаб.
+        max_val = max(values) if max(values) > 0 else 1
+        fig.update_layout(
+            height=280,
+            margin=dict(l=10, r=80, t=20, b=30),
+            xaxis=dict(
+                title="Внесок у Engagement Score",
+                range=[0, max_val * 1.25],
+                gridcolor="#ecf0f1",
+                zerolinecolor="#bdc3c7",
+            ),
+            yaxis=dict(
+                autorange="reversed",
+                tickfont=dict(size=13),
+                automargin=True,
+            ),
+            plot_bgcolor="white",
+            showlegend=False,
+            annotations=[
+                dict(
+                    x=1, y=1.08, xref="paper", yref="paper",
+                    text=f"<b>Σ = {total:.2f}</b>",
+                    showarrow=False,
+                    font=dict(size=16, color="#e74c3c"),
+                    xanchor="right",
+                ),
+            ],
+        )
+        return fig
 
 
 # ------------------------------------------------------------------ App
